@@ -1,137 +1,123 @@
 package main
 
 import (
-	db "Test1/DB"
-	"context"
+	"Test1/api"
+	"Test1/auth"
+	"Test1/model"
 	"encoding/json"
-	"fmt"
 	"github.com/julienschmidt/httprouter"
-	"go.mongodb.org/mongo-driver/bson"
+	"gitlab.com/treehousefi/go-sdk/sdk"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 )
 
-func main() {
-	router := httprouter.New()
-	router.POST("/login", Login)
-	router.POST("/register", Register)
-	router.GET("/user/get", CheckJwt(GetMyPosts))
-	//router.GET("/user/get", GetMyPosts(GetUser))
-	fmt.Println("Listening to port 8000")
-	log.Fatal(http.ListenAndServe(":8000", router))
+var app *sdk.App
 
-}
-func Login(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var user User
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		panic(err)
-	}
-	err = json.Unmarshal(body, &user)
-	if err != nil {
-		panic(err)
-	}
-	username := Format(user.Username)
-	password := Format(user.Password)
-	collection := db.ConnectUsers()
-	var result bson.M
-	err = collection.FindOne(context.TODO(), bson.M{"username": username}).Decode(&result)
-
-	if err != nil {
-		errorResponse(w, "Username or Password incorrect", http.StatusBadRequest)
-		return
-	}
-	hashedPassword := fmt.Sprintf("%v", result["password"])
-	err = CheckPasswordHash(hashedPassword, password)
-
-	if err != nil {
-		errorResponse(w, "Password incorrect", http.StatusUnauthorized)
-		return
-	}
-	token, errCreate := CreateToken(username)
-	if errCreate != nil {
-		errorResponse(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	log.Println(token)
-	errorResponse(w, "Login success", http.StatusOK)
-	return
-}
-
-func Register(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var user User
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		panic(err)
-	}
-	err = json.Unmarshal(body, &user)
-	if err != nil {
-		panic(err)
-	}
-	username := Format(user.Username)
-	email := Format(user.Email)
-	password := Format(user.Password)
-
-	collection := db.ConnectUsers()
-	var result bson.M
-	errFindUsername := collection.FindOne(context.TODO(), bson.M{"username": username}).Decode(&result)
-	if errFindUsername == nil {
-		errorResponse(w, "User does exists", http.StatusConflict)
-		return
-	}
-	password, err = Hash(password)
-
-	if err != nil {
-		errorResponse(w, "Register has failed", http.StatusInternalServerError)
-		return
-	}
-
-	newUser := bson.M{"username": username, "email": email, "password": password}
-	_, err = collection.InsertOne(context.TODO(), newUser)
-
-	if err != nil {
-		errorResponse(w, "Register has failed", http.StatusInternalServerError)
-		return
-	}
-	errorResponse(w, "Register Succesfully", http.StatusCreated)
-}
-
-func errorResponse(w http.ResponseWriter, message string, httpStatusCode int) {
+func test(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(httpStatusCode)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS,POST,PUT")
+	w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type,Accept, x-client-key, x-client-token, x-client-secret, Authorization")
+	Body := make(map[string]interface{})
+	bodyByte, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err)
+	}
+	err = json.Unmarshal(bodyByte, &Body)
+	if err != nil {
+		panic(err)
+	}
+	a := Body["a"].(string)
+	b := Body["b"].(string)
 	resp := make(map[string]string)
-	resp["message"] = message
-	jsonResp, _ := json.Marshal(resp)
-	w.Write(jsonResp)
+
+	resp["AccessToken"] = a
+	resp["RefreshToken"] = b
+	jData, _ := json.Marshal(resp)
+	w.Write(jData)
+	log.Print("ok")
+
 }
 
-func GetMyPosts(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	username, err := ExtractUsernameFromToken(r)
+func main() {
 
-	if err != nil {
-		errorResponse(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+	app = sdk.NewApp("Test1")
+
+	setupDatabase()
+
+	app.OnAllDBConnected(onAllConnected)
+
+	protocol := os.Getenv("protocol")
+	if protocol == "" {
+		protocol = "HTTP"
 	}
+	server, _ := app.SetupAPIServer(protocol)
+	//server.PreRequest(func(req sdk.APIRequest, res sdk.APIResponder) error {
+	//
+	//	req.SetHeader("Content-Type", "application/json")
+	//	req.SetHeader("Access-Control-Allow-Origin", "*")
+	//	req.SetHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS,POST,PUT")
+	//	req.SetHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type,Accept, x-client-key, x-client-token, x-client-secret, Authorization")
+	//	return nil
+	//})
 
-	collection := db.ConnectUsers()
+	server.PreRequest(func(req sdk.APIRequest, res sdk.APIResponder) error {
 
-	fmt.Println(username)
+		if strings.Contains(req.GetPath(), "/login") {
+			return nil
+		}
+		if strings.Contains(req.GetPath(), "/register") {
+			return nil
+		}
+		err := auth.Verify(req)
+		if err != nil {
+			return res.Respond(&sdk.APIResponse{
+				Status: sdk.APIStatus.Unauthorized,
+			})
+		}
+		return nil
+	})
 
-	//var result interface{}
-	var user User
-	errFindUsername := collection.FindOne(context.TODO(), bson.M{"username": username}).Decode(&user)
-	if errFindUsername != nil {
-		errorResponse(w, "User does not exist", http.StatusConflict)
-		return
-	}
-	log.Println(user)
-	errorResponse(w, "Succesfully", http.StatusOK)
-	resp := make(map[string]string)
+	server.Expose(8000)
+	server.SetHandler(sdk.APIMethod.GET, "/blockList", api.BlockHighest)
+	server.SetHandler(sdk.APIMethod.GET, "/transactions", api.Transactions)
+	server.SetHandler(sdk.APIMethod.POST, "/login", api.Login)
+	server.SetHandler(sdk.APIMethod.POST, "/register", api.Register)
+	server.SetHandler(sdk.APIMethod.GET, "/refresh", api.RefreshToken)
+	server.SetHandler(sdk.APIMethod.GET, "/block", api.BlockInformation)
+	server.SetHandler(sdk.APIMethod.GET, "/transaction-info", api.TransactionInformation)
+	server.SetHandler(sdk.APIMethod.GET, "/contract", api.Contract)
+	server.SetHandler(sdk.APIMethod.GET, "/balanceof", api.BalanceOf)
+	server.SetHandler(sdk.APIMethod.GET, "/last-minted-timestamp", api.LastMintedTimestamp)
+	server.SetHandler(sdk.APIMethod.GET, "/allowance", api.Allowance)
+	server.SetHandler(sdk.APIMethod.GET, "/logout", api.Logout)
 
-	resp["username: "] = user.Username
-	resp["email: "] = user.Email
-	jsonResp, _ := json.Marshal(resp)
-	w.Write(jsonResp)
+	app.Launch()
 
+}
+
+func setupDatabase() {
+	dbClient := app.SetupDBClient(sdk.DBConfiguration{
+		Address:            []string{"localhost:27017"},
+		Username:           "admin",
+		Password:           "123456789",
+		AuthDB:             "golang",
+		Ssl:                false,
+		SecondaryPreferred: false,
+	})
+	dbClient.OnConnected(onDBConnected)
+}
+
+func onDBConnected(session *sdk.DBSession) error {
+	model.InitDB_User(session)
+	model.InitDB_Jwt(session)
+	return nil
+}
+
+func onAllConnected() {
+
+	//model.Queue.StartConsumer(model.Consumer, 50)
 }
