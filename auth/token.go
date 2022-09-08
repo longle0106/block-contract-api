@@ -74,6 +74,8 @@ func Extract(req sdk.APIRequest) string {
 	return strings.Split(bearerToken, " ")[1]
 }
 
+//asda
+
 func ExtractUsernameFromToken(req sdk.APIRequest) (string, error) {
 	var username string
 	tokenString := Extract(req)
